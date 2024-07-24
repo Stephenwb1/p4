@@ -17,9 +17,15 @@ pyhop.declare_methods ('produce', produce)
 
 def make_method (name, rule):
 	def method (state, ID):
-		# your code here
-		pass
+		for req, qty in rule.get('Requires', {}).items():
+			if getattr(state, req)[ID] < qty:
+				return False
+		
+		tasks = []
+		for producing, qty in rule['Produces'].items():
+			tasks.append(('produce_{}'.format(producing), ID))
 
+		return tasks
 	return method
 
 def declare_methods (data):
@@ -28,18 +34,50 @@ def declare_methods (data):
 
 	# your code here
 	# hint: call make_method, then declare the method to pyhop using pyhop.declare_methods('foo', m1, m2, ..., mk)	
-	pass			
+
+	methods_dictionary = {}
+
+	for recipe, rule in data['Recipes'].items():
+		produced_item = list(rule['Produces'].keys())[0]
+		if produced_item not in methods_dictionary:
+			methods_dictionary[produced_item] = []
+		methods_dictionary[produced_item].append(make_method(recipe, rule))
+
+	for item, methods in methods_dictionary.items():
+		pyhop.declare_methods('produce_{}'.format(item), *methods)	
+
 
 def make_operator (rule):
 	def operator (state, ID):
-		# your code here
-		pass
+		
+		for req, qty in rule.get('Requires', {}).items():
+			if getattr(state, req)[ID] < qty:
+				return False
+		
+		for req, qty in rule.get('Consumes', {}).items():
+			setattr(state, req, {ID: getattr(state, req)[ID] - qty})
+		
+		for prod, qty in rule.get('Produces', {}).items():
+			setattr(state, prod, {ID: getattr(state, prod)[ID] + qty})
+		
+		state.time[ID] += rule['Time']
+
+		return state
+
 	return operator
 
 def declare_operators (data):
 	# your code here
 	# hint: call make_operator, then declare the operator to pyhop using pyhop.declare_operators(o1, o2, ..., ok)
-	pass
+
+	operators = []
+
+	for recipe, rule in data['Recipes'].items():
+		operators.append(make_operator(rule))
+
+	pyhop.declare_operators(*operators)
+
+	
 
 def add_heuristic (data, ID):
 	# prune search branch if heuristic() returns True
@@ -47,6 +85,15 @@ def add_heuristic (data, ID):
 	# e.g. def heuristic2(...); pyhop.add_check(heuristic2)
 	def heuristic (state, curr_task, tasks, plan, depth, calling_stack):
 		# your code here
+		if curr_task in plan:
+			return True
+		
+		if len(calling_stack) > 1 and curr_task == calling_stack[-2]:
+			return True
+
+		if depth > 100:
+			return True
+		
 		return False # if True, prune this branch
 
 	pyhop.add_check(heuristic)
