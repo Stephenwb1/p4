@@ -1,124 +1,147 @@
 import pyhop
 import json
 
-def check_enough(state, ID, item, num):
-    if getattr(state, item)[ID] >= num:
-        return []
-    return False
+def check_enough (state, ID, item, num):
+	if getattr(state,item)[ID] >= num: return []
+	return False
 
-def produce_enough(state, ID, item, num):
-    return [('produce', ID, item), ('have_enough', ID, item, num)]
+def produce_enough (state, ID, item, num):
+	return [('produce', ID, item), ('have_enough', ID, item, num)]
 
-pyhop.declare_methods('have_enough', check_enough, produce_enough)
+pyhop.declare_methods ('have_enough', check_enough, produce_enough)
 
-def produce(state, ID, item):
-    return [('produce_{}'.format(item), ID)]
+def produce (state, ID, item):
+	return [('produce_{}'.format(item), ID)]
 
-pyhop.declare_methods('produce', produce)
+pyhop.declare_methods ('produce', produce)
 
 def make_method(name, rule):
     def method(state, ID):
+        # Check if the item is already available
+        produced_items = rule.get('Produces', {})
+        for item, qty in produced_items.items():
+            if getattr(state, item)[ID] >= qty:
+                return []
+        
+        # Check if requirements are met
+        required_items = rule.get('Requires', {})
+        for tool, count in required_items.items():
+            if getattr(state, tool)[ID] < count:
+                return False 
+        
+        # Create the list of tasks
         tasks = []
-        for req, qty in rule.get('Requires', {}).items():
-            tasks.append(('have_enough', ID, req, qty))
-        for cons, qty in rule.get('Consumes', {}).items():
-            tasks.append(('have_enough', ID, cons, qty))
-        tasks.append((f'op_{name.replace(" ", "_")}', ID))
+        produces = rule.get('Produces', {})
+        for produced_item, count in produces.items():
+            tasks.append((f'produce_{produced_item}', ID))
+        
+        consumes = rule.get('Consumes', {})
+        for item, count in consumes.items():
+            tasks.append((f'consume_{item}', ID, count))
+        
         return tasks
+	
+
+    method.__name__ = name
     return method
 
 def declare_methods(data):
-    methods_dict = {}
-    for recipe, rule in data['Recipes'].items():
-        produced_item = list(rule['Produces'].keys())[0]
-        if produced_item not in methods_dict:
-            methods_dict[produced_item] = []
-        methods_dict[produced_item].append((recipe, make_method(recipe, rule)))
+    recipes = data['Recipes']
+	
+    item_to_recipe = {}
+    for name, rule in recipes.items():
+        produces = rule.get('Produces', {})
+        for item in produces.keys():
+            item_to_recipe[item] = rule
 
-    for item, methods in methods_dict.items():
-        # Sort methods by the time required for their corresponding rules
-        sorted_methods = sorted(methods, key=lambda x: data['Recipes'][x[0]]['Time'])
-        pyhop.declare_methods(f'produce_{item}', *[m[1] for m in sorted_methods])
+    methods = {}
+    for item, rule in item_to_recipe.items():
+        method_name = f'produce_{item}'
+        if method_name not in methods:
+            methods[method_name] = make_method(method_name, rule)
+    
+    for method_name, method in methods.items():
+        pyhop.declare_methods(method_name, method)	
 
-def make_operator(rule):
-    def operator(state, ID):
-        for req, qty in rule.get('Requires', {}).items():
-            if getattr(state, req)[ID] < qty:
-                return False
-        
-        for cons, qty in rule.get('Consumes', {}).items():
-            setattr(state, cons, {ID: getattr(state, cons)[ID] - qty})
-        
-        for prod, qty in rule.get('Produces', {}).items():
-            setattr(state, prod, {ID: getattr(state, prod)[ID] + qty})
-        
-        state.time[ID] -= rule['Time']
-        return state
-    return operator
+def make_operator (name, rule):
+	def operator (state, ID):
+		for req, qty in rule.get('Requires', {}).items():
+			if getattr(state, req)[ID] < qty:
+				return False
+		
+		for req, qty in rule.get('Consumes', {}).items():
+			setattr(state, req, {ID: getattr(state, req)[ID] - qty})
+		
+		for prod, qty in rule.get('Produces', {}).items():
+			setattr(state, prod, {ID: getattr(state, prod)[ID] + qty})
+		
+		state.time[ID] += rule['Time']
 
-def declare_operators(data):
-    operators = [make_operator(rule) for recipe, rule in data['Recipes'].items()]
-    pyhop.declare_operators(*operators)
+		return state
+	operator.__name__ = name
+	return operator
 
-def add_heuristic(data, ID):
-    def heuristic(state, curr_task, tasks, plan, depth, calling_stack):
-        # Prevent infinite loops by limiting recursive calls and redundant tasks
-        if curr_task in plan:
-            return True
-        if len(calling_stack) > 1 and curr_task == calling_stack[-2]:
-            return True
-        if depth > 50:  # Reduce depth limit to prevent deep recursion
-            return True
-        return False
-    pyhop.add_check(heuristic)
+def declare_operators (data):
+	# your code here
+	# hint: call make_operator, then declare the operator to pyhop using pyhop.declare_operators(o1, o2, ..., ok)
+	
+	operators = []
 
-def set_up_state(data, ID, time=0):
-    state = pyhop.State('state')
-    state.time = {ID: time}
+	for recipe, rule in data['Recipes'].items():
+		operators.append(make_operator(recipe, rule))
 
-    for item in data['Items']:
-        setattr(state, item, {ID: 0})
+	pyhop.declare_operators(*operators)
 
-    for item in data['Tools']:
-        setattr(state, item, {ID: 0})
+def add_heuristic (data, ID):
+	# prune search branch if heuristic() returns True
+	# do not change parameters to heuristic(), but can add more heuristic functions with the same parameters: 
+	# e.g. def heuristic2(...); pyhop.add_check(heuristic2)
+	def heuristic (state, curr_task, tasks, plan, depth, calling_stack):
+		# your code here
+		return False # if True, prune this branch
 
-    for item, num in data['Initial'].items():
-        setattr(state, item, {ID: num})
+	pyhop.add_check(heuristic)
 
-    return state
 
-def set_up_goals(data, ID):
-    goals = []
-    for item, num in data['Goal'].items():
-        goals.append(('have_enough', ID, item, num))
-    return goals
+def set_up_state (data, ID, time=0):
+	state = pyhop.State('state')
+	state.time = {ID: time}
 
-# Define the op_punch_for_wood operator
-def op_punch_for_wood(state, ID):
-    if state.time[ID] >= 4:
-        state.wood[ID] += 1
-        state.time[ID] -= 4
-        return state
-    return False
+	for item in data['Items']:
+		setattr(state, item, {ID: 0})
+
+	for item in data['Tools']:
+		setattr(state, item, {ID: 0})
+
+	for item, num in data['Initial'].items():
+		setattr(state, item, {ID: num})
+
+	return state
+
+def set_up_goals (data, ID):
+	goals = []
+	for item, num in data['Goal'].items():
+		goals.append(('have_enough', ID, item, num))
+
+	return goals
 
 if __name__ == '__main__':
-    rules_filename = 'crafting.json'
+	rules_filename = 'crafting.json'
 
-    with open(rules_filename) as f:
-        data = json.load(f)
+	with open(rules_filename) as f:
+		data = json.load(f)
 
-    state = set_up_state(data, 'agent', time=239)
-    goals = set_up_goals(data, 'agent')
+	state = set_up_state(data, 'agent', time=239) # allot time here
+	goals = set_up_goals(data, 'agent')
 
-    declare_operators(data)
-    declare_methods(data)
-    add_heuristic(data, 'agent')
+	declare_operators(data)
+	declare_methods(data)
+	add_heuristic(data, 'agent')
 
-    # Declare the op_punch_for_wood operator
-    pyhop.declare_operators(op_punch_for_wood)
+	pyhop.print_operators()
+	pyhop.print_methods()
 
-    # Print declared operators and methods for debugging
-    pyhop.print_operators()
-    pyhop.print_methods()
-
-    pyhop.pyhop(state, goals, verbose=3)
+	# Hint: verbose output can take a long time even if the solution is correct; 
+	# try verbose=1 if it is taking too long
+	pyhop.pyhop(state, goals, verbose=3)
+	# pyhop.pyhop(state, [('have_enough', 'agent', 'cart', 1),('have_enough', 'agent', 'rail', 20)], verbose=3)
